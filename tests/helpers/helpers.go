@@ -82,6 +82,7 @@ type EventOptsT struct {
 	ID           string
 	MessageID    string
 	GaVal        int
+	ValString    string
 }
 
 // SendEventRequest sends sample event.json with EventOptionsT overrides to gateway server
@@ -110,6 +111,7 @@ func SendEventRequest(options EventOptsT) int {
 	jsonPayload, _ = sjson.Set(jsonPayload, "batch.0.anonymousId", options.ID)
 	jsonPayload, _ = sjson.Set(jsonPayload, "batch.0.messageId", options.MessageID)
 	jsonPayload, _ = sjson.Set(jsonPayload, "batch.0.properties.value", options.GaVal)
+	jsonPayload, _ = sjson.Set(jsonPayload, "batch.0.properties.strvalue", options.ValString)
 
 	req, err := http.NewRequest("POST", serverIP, bytes.NewBuffer([]byte(jsonPayload)))
 	req.Header.Set("Content-Type", "application/json")
@@ -229,4 +231,17 @@ func GetJobStatus(dbHandle *sql.DB, prefix string, limit int, jobState string) [
 		}
 	}
 	return jobStatusList
+}
+
+// GetTableSize returns the size of table in MB
+func GetTableSize(dbHandle *sql.DB, jobTable string) int64 {
+	var tableSize int64
+	fmt.Println(jobTable)
+	sqlStatement := fmt.Sprintf(`SELECT PG_TOTAL_RELATION_SIZE('%s')`, jobTable)
+	row := dbHandle.QueryRow(sqlStatement)
+	err := row.Scan(&tableSize)
+	if err != nil {
+		panic(err)
+	}
+	return tableSize
 }
