@@ -11,6 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/rudderlabs/rudder-server/config"
 	"github.com/rudderlabs/rudder-server/jobsdb"
+	"github.com/rudderlabs/rudder-server/processor/integrations"
 	"github.com/rudderlabs/rudder-server/tests/helpers"
 	uuid "github.com/satori/go.uuid"
 	"github.com/tidwall/gjson"
@@ -20,6 +21,7 @@ import (
 var dbHandle *sql.DB
 var gatewayDBPrefix string
 var routerDBPrefix string
+var batchRouterDBPrefix string
 var dbPollFreqInS int = 1
 var gatewayDBCheckBufferInS int = 15
 var jobSuccessStatus string = "succeeded"
@@ -33,11 +35,129 @@ var _ = BeforeSuite(func() {
 	}
 	gatewayDBPrefix = config.GetString("Gateway.CustomVal", "GW")
 	routerDBPrefix = config.GetString("Router.CustomVal", "RT")
+	batchRouterDBPrefix = config.GetString("BatchRouter.CustomVal", "BRT")
 })
 
 var _ = Describe("E2E", func() {
 
 	Context("Without user sessions processing", func() {
+		It("verify server stability for bad batch destinations config", func() {
+			initGatewayJobsCount := helpers.GetJobsCount(dbHandle, gatewayDBPrefix)
+			initialBatchRouterJobsCount := helpers.GetJobsCount(dbHandle, batchRouterDBPrefix)
+
+			//Source with WriteKey: 1ZD2Bdo5U02zyIifHD8FJugy4pZ(Src: 1ZD2BgskXCy2c6v09jV1jyPuQR1) has 6 dests (2 S3, 2 GCS, 2 Azure Blob)
+			//None of the destinations have valid config
+			helpers.SendEventRequest(helpers.EventOptsT{
+				WriteKey: "1ZD2Bdo5U02zyIifHD8FJugy4pZ",
+			})
+
+			// wait for some seconds for events to be processed by gateway
+			time.Sleep(6 * time.Second)
+			Eventually(func() int {
+				return helpers.GetJobsCount(dbHandle, gatewayDBPrefix)
+			}, gatewayDBCheckBufferInS, dbPollFreqInS).Should(Equal(initGatewayJobsCount + 1))
+			Eventually(func() int {
+				return helpers.GetJobsCount(dbHandle, batchRouterDBPrefix)
+			}, gatewayDBCheckBufferInS, dbPollFreqInS).Should(Equal(initialBatchRouterJobsCount))
+
+			// check health to see if the server is up
+			Eventually(func() bool {
+				// if server is down then the following will crash and tests will fail.
+				helpers.SendHealthRequest()
+				return true
+			}, gatewayDBCheckBufferInS, dbPollFreqInS).Should(Equal(true))
+		})
+
+		It("verify router payload has all the necessary fields", func() {
+			initGatewayJobsCount := helpers.GetJobsCount(dbHandle, gatewayDBPrefix)
+			initialRouterJobsCount := helpers.GetJobsCount(dbHandle, routerDBPrefix)
+
+			//Source with WriteKey: 1YNT7MhrKNIE82bfHwIsWE13uS9 has 34 enabled destinations.
+			//13 entries should be created in routerdb.
+			helpers.SendEventRequest(helpers.EventOptsT{
+				WriteKey: "1YNT7MhrKNIE82bfHwIsWE13uS9",
+			})
+
+			// wait for some seconds for events to be processed by gateway
+			time.Sleep(6 * time.Second)
+			Eventually(func() int {
+				return helpers.GetJobsCount(dbHandle, gatewayDBPrefix)
+			}, gatewayDBCheckBufferInS, dbPollFreqInS).Should(Equal(initGatewayJobsCount + 1))
+			Eventually(func() int {
+				return helpers.GetJobsCount(dbHandle, routerDBPrefix)
+			}, gatewayDBCheckBufferInS, dbPollFreqInS).Should(Equal(initialRouterJobsCount + 13))
+			Eventually(func() bool {
+				jobs := helpers.GetLatestJobs(dbHandle, routerDBPrefix, 13)
+				for _, job := range jobs {
+					_, ok := gjson.GetBytes(job.Parameters, "source_id").Value().(string)
+					if !ok {
+						return false
+					}
+					_, ok = gjson.GetBytes(job.Parameters, "destination_id").Value().(string)
+					if !ok {
+						return false
+					}
+
+					version := integrations.GetResponseVersion(job.EventPayload)
+
+					switch version {
+					case "0":
+						_, ok = gjson.GetBytes(job.EventPayload, "endpoint").Value().(string)
+						if !ok {
+							return false
+						}
+						_, ok = gjson.GetBytes(job.EventPayload, "userId").Value().(string)
+						if !ok {
+							return false
+						}
+						_, ok = gjson.GetBytes(job.EventPayload, "payload").Value().(interface{})
+						if !ok {
+							return false
+						}
+						_, ok = gjson.GetBytes(job.EventPayload, "header").Value().(interface{})
+						if !ok {
+							return false
+						}
+						_, ok = gjson.GetBytes(job.EventPayload, "requestConfig").Value().(interface{})
+						if !ok {
+							return false
+						}
+					case "-1", "1":
+						_, ok = gjson.GetBytes(job.EventPayload, "endpoint").Value().(string)
+						if !ok {
+							return false
+						}
+						_, ok = gjson.GetBytes(job.EventPayload, "method").Value().(string)
+						if !ok {
+							return false
+						}
+						_, ok = gjson.GetBytes(job.EventPayload, "userId").Value().(string)
+						if !ok {
+							return false
+						}
+						_, ok = gjson.GetBytes(job.EventPayload, "body").Value().(interface{})
+						if !ok {
+							return false
+						}
+						_, ok = gjson.GetBytes(job.EventPayload, "headers").Value().(interface{})
+						if !ok {
+							return false
+						}
+						_, ok = gjson.GetBytes(job.EventPayload, "params").Value().(interface{})
+						if !ok {
+							return false
+						}
+						_, ok = gjson.GetBytes(job.EventPayload, "files").Value().(interface{})
+						if !ok {
+							return false
+						}
+					}
+
+				}
+				return true
+			}, gatewayDBCheckBufferInS, dbPollFreqInS).Should(Equal(true))
+
+		})
 
 		It("verify event stored in gateway 1. has right sourceId and writeKey, 2. enhanced with messageId, anonymousId, requestIP and receivedAt fields", func() {
 			eventTypeMap := []string{"BATCH", "IDENTIFY", "GROUP", "TRACK", "SCREEN", "PAGE", "ALIAS"}
