@@ -180,6 +180,7 @@ var (
 	rawDataDestinations                 []string
 	configSubscriberLock                sync.RWMutex
 	isReplayServer                      bool
+	log                                 logger.LoggerI = logger.NewLogger()
 )
 
 func loadConfig() {
@@ -229,7 +230,7 @@ func (proc *HandleT) backendConfigSubscriber() {
 
 func (proc *HandleT) addJobsToSessions(jobList []*jobsdb.JobT) {
 
-	logger.Debug("[Processor: addJobsToSessions] adding jobs to session")
+	log.Debug("[Processor: addJobsToSessions] adding jobs to session")
 	proc.userPQLock.Lock()
 
 	//List of users whose jobs need to be processed
@@ -240,12 +241,12 @@ func (proc *HandleT) addJobsToSessions(jobList []*jobsdb.JobT) {
 		eventList, ok := misc.ParseRudderEventBatch(job.EventPayload)
 		if !ok {
 			//bad event
-			logger.Debug("[Processor: addJobsToSessions] bad event")
+			log.Debug("[Processor: addJobsToSessions] bad event")
 			continue
 		}
 		userID, ok := misc.GetAnonymousID(eventList[0])
 		if !ok {
-			logger.Error("[Processor: addJobsToSessions] Failed to get userID for job")
+			log.Error("[Processor: addJobsToSessions] Failed to get userID for job")
 			continue
 		}
 
@@ -258,7 +259,7 @@ func (proc *HandleT) addJobsToSessions(jobList []*jobsdb.JobT) {
 			proc.userEventsMap[userID] = make([]interface{}, 0)
 		}
 		// Adding a new session id for the user, if not present
-		logger.Debug("[Processor: addJobsToSessions] Adding a new session id for the user")
+		log.Debug("[Processor: addJobsToSessions] Adding a new session id for the user")
 		_, ok = proc.userToSessionIDMap[userID]
 		if !ok {
 			proc.userToSessionIDMap[userID] = uuid.NewV4().String()
@@ -300,7 +301,7 @@ func (proc *HandleT) addJobsToSessions(jobList []*jobsdb.JobT) {
 		userEventsToProcess := make(map[string][]interface{})
 		userToSessionMap := make(map[string]string)
 
-		logger.Debug("Post Add Processing")
+		log.Debug("Post Add Processing")
 		proc.Print()
 
 		//We clear the data structure for these users
@@ -312,7 +313,7 @@ func (proc *HandleT) addJobsToSessions(jobList []*jobsdb.JobT) {
 			delete(proc.userEventsMap, userID)
 			delete(proc.userToSessionIDMap, userID)
 		}
-		logger.Debug("Processing")
+		log.Debug("Processing")
 		proc.Print()
 		//We release the block before actually processing
 		proc.userPQLock.Unlock()
@@ -324,7 +325,7 @@ func (proc *HandleT) addJobsToSessions(jobList []*jobsdb.JobT) {
 
 func (proc *HandleT) processUserJobs(userJobs map[string][]*jobsdb.JobT, userEvents map[string][]interface{}, userToSessionMap map[string]string) {
 
-	logger.Debug("[Processor: processUserJobs] in processUserJobs")
+	log.Debug("[Processor: processUserJobs] in processUserJobs")
 
 	totalJobs := 0
 	allJobIDs := make(map[int64]bool)
@@ -420,7 +421,7 @@ func createUserTransformedJobsFromEvents(transformUserEventList []interface{},
 }
 
 func (proc *HandleT) createSessions() {
-	logger.Debug("[Processor: createSessions] starting sessions")
+	log.Debug("[Processor: createSessions] starting sessions")
 	for {
 		proc.userPQLock.Lock()
 		//Now jobs
@@ -436,7 +437,7 @@ func (proc *HandleT) createSessions() {
 		if time.Since(oldestItem.lastTS) < time.Duration(sessionInactivityThreshold) {
 			proc.userPQLock.Unlock()
 			sleepTime := time.Duration(sessionInactivityThreshold) - time.Since(oldestItem.lastTS)
-			logger.Debug("Sleeping", sleepTime)
+			log.Debug("Sleeping", sleepTime)
 			time.Sleep(sleepTime)
 			continue
 		}
@@ -477,7 +478,7 @@ func (proc *HandleT) createSessions() {
 		proc.Print()
 		proc.userPQLock.Unlock()
 		if len(userJobsToProcess) > 0 {
-			logger.Debug("Processing Session Check")
+			log.Debug("Processing Session Check")
 			proc.Print()
 			proc.processUserJobs(userJobsToProcess, userEventsToProcess, userToSessionMap)
 		}
@@ -613,9 +614,9 @@ func (proc *HandleT) processJobsForDest(jobList []*jobsdb.JobT, parsedEventList 
 				destTypesFromConfig := getEnabledDestinationTypes(writeKey)
 				destTypes := integrations.GetDestinationIDs(singularEvent, destTypesFromConfig)
 
-				// logger.Debug("=== destTypes ===", destTypes)
+				// log.Debug("=== destTypes ===", destTypes)
 				if len(destTypes) == 0 {
-					logger.Debug("No enabled destinations")
+					log.Debug("No enabled destinations")
 					continue
 				}
 				enabledDestinationsMap := map[string][]backendconfig.DestinationT{}
@@ -629,7 +630,7 @@ func (proc *HandleT) processJobsForDest(jobList []*jobsdb.JobT, parsedEventList 
 					enabledDestinationsMap[destType] = enabledDestinationsList
 					// Adding a singular event multiple times if there are multiple destinations of same type
 					if len(destTypes) == 0 {
-						logger.Debugf("No enabled destinations for type %v", destType)
+						log.Debugf("No enabled destinations for type %v", destType)
 						continue
 					}
 					for _, destination := range enabledDestinationsList {
@@ -676,7 +677,7 @@ func (proc *HandleT) processJobsForDest(jobList []*jobsdb.JobT, parsedEventList 
 	//for each destination ID
 
 	proc.destProcessing.Start()
-	logger.Debug("[Processor: processJobsForDest] calling transformations")
+	log.Debug("[Processor: processJobsForDest] calling transformations")
 	for destID, destEventList := range eventsByDestID {
 		//Call transform for this destination. Returns
 		//the JSON we can send to the destination
@@ -693,7 +694,7 @@ func (proc *HandleT) processJobsForDest(jobList []*jobsdb.JobT, parsedEventList 
 		var eventsToTransform []interface{}
 		// Send to custom transformer only if the destination has a transformer enabled
 		if transformationEnabled {
-			logger.Debug("Custom Transform input size", len(destEventList))
+			log.Debug("Custom Transform input size", len(destEventList))
 			if processSessions {
 				// If processSessions is true, Transform should break into a new batch only when user changes.
 				// This way all the events of a user session are never broken into separate batches
@@ -710,20 +711,20 @@ func (proc *HandleT) processJobsForDest(jobList []*jobsdb.JobT, parsedEventList 
 			for _, userTransformedEvent := range response.Events {
 				eventsToTransform = append(eventsToTransform, userTransformedEvent.(map[string]interface{})["output"])
 			}
-			logger.Debug("Custom Transform output size", len(eventsToTransform))
+			log.Debug("Custom Transform output size", len(eventsToTransform))
 		} else {
-			logger.Debug("No custom transformation")
+			log.Debug("No custom transformation")
 			eventsToTransform = destEventList
 		}
-		logger.Debug("Dest Transform input size", len(eventsToTransform))
+		log.Debug("Dest Transform input size", len(eventsToTransform))
 		destStat.destTransform.Start()
 		response = proc.transformer.Transform(eventsToTransform, url, transformBatchSize, false)
 		destStat.destTransform.End()
 
 		destTransformEventList := response.Events
-		logger.Debug("Dest Transform output size", len(destTransformEventList))
+		log.Debug("Dest Transform output size", len(destTransformEventList))
 		if !response.Success {
-			logger.Debug("[Processor: processJobsForDest] Request to transformer not a success ", response.Events)
+			log.Debug("[Processor: processJobsForDest] Request to transformer not a success ", response.Events)
 			continue
 		}
 		destStat.numOutputEvents.Count(len(destTransformEventList))
@@ -745,7 +746,7 @@ func (proc *HandleT) processJobsForDest(jobList []*jobsdb.JobT, parsedEventList 
 			sourceID, ok := destEvent.(map[string]interface{})["metadata"].(map[string]interface{})["sourceId"].(string)
 			destID, ok := destEvent.(map[string]interface{})["metadata"].(map[string]interface{})["destinationId"].(string)
 			if !ok {
-				logger.Errorf("Error retrieving source_id from transformed event: %+v", destEvent)
+				log.Errorf("Error retrieving source_id from transformed event: %+v", destEvent)
 			}
 			newJob := jobsdb.JobT{
 				UUID:         id,
@@ -781,7 +782,7 @@ func (proc *HandleT) processJobsForDest(jobList []*jobsdb.JobT, parsedEventList 
 	proc.gatewayDB.UpdateJobStatus(statusList, []string{gateway.CustomVal}, nil)
 	proc.statDBW.End()
 
-	logger.Debugf("Processor GW DB Write Complete. Total Processed: %v", len(statusList))
+	log.Debugf("Processor GW DB Write Complete. Total Processed: %v", len(statusList))
 	//XX: End of transaction
 	proc.pStatsDBW.End(len(statusList))
 	proc.pStatsJobs.End(totalEvents)
@@ -798,7 +799,7 @@ func (proc *HandleT) mainLoop() {
 	//waiting till the backend config is received
 	backendconfig.WaitForConfig()
 
-	logger.Info("Processor loop started")
+	log.Info("Processor loop started")
 	currLoopSleep := time.Duration(0)
 
 	for {
@@ -816,7 +817,7 @@ func (proc *HandleT) mainLoop() {
 
 		proc.statDBR.End()
 		if len(unprocessedList)+len(retryList) == 0 {
-			logger.Debugf("Processor DB Read Complete. No GW Jobs to process.")
+			log.Debugf("Processor DB Read Complete. No GW Jobs to process.")
 			proc.pStatsDBR.End(0)
 
 			currLoopSleep = 2*currLoopSleep + loopSleep
@@ -832,7 +833,7 @@ func (proc *HandleT) mainLoop() {
 
 		proc.statListSort.Start()
 		combinedList := append(unprocessedList, retryList...)
-		logger.Debugf("Processor DB Read Complete. retryList: %v, unprocessedList: %v, total: %v", len(retryList), len(unprocessedList), len(combinedList))
+		log.Debugf("Processor DB Read Complete. retryList: %v, unprocessedList: %v, total: %v", len(retryList), len(unprocessedList), len(combinedList))
 		proc.pStatsDBR.End(len(combinedList))
 		proc.statGatewayDBR.Count(len(combinedList))
 
@@ -877,7 +878,7 @@ func (proc *HandleT) crashRecover() {
 		if len(execList) == 0 {
 			break
 		}
-		logger.Debug("Processor crash recovering", len(execList))
+		log.Debug("Processor crash recovering", len(execList))
 
 		var statusList []*jobsdb.JobStatusT
 
